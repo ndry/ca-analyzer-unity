@@ -284,4 +284,10 @@ public class RuleSpacetime : MonoBehaviour {
         var normFactor = space.spaceSize - size - nr - nr;
         return counter * 1f / normFactor;
     }
+
+    [Button(ButtonSpacing.After)]
+    public void Randomate() {
+        RandomizeRule();
+        Emulate();
+    }
 }
