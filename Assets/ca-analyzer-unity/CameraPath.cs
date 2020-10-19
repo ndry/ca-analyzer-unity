@@ -4,10 +4,9 @@ using UnityEngine;
 
 public class CameraPath : MonoBehaviour {
     public RuleSpacetime rule;
-    public float zoomVelocity = 1;
+    public float zoomVelocity = 0f;
+    public float zoomVelocityPeriod = 1f;
     public Vector3 velocity;
-
-    public float switchZoomAt = 100;
     // Start is called before the first frame update
     void Start() {
         rule.Emulate();
@@ -15,11 +14,9 @@ public class CameraPath : MonoBehaviour {
 
     // Update is called once per frame
     void Update() {
-        transform.Translate(Time.deltaTime * velocity);
+        transform.Translate(Time.fixedDeltaTime * velocity);
         var camera = GetComponent<Camera>();
-        camera.orthographicSize *= Mathf.Pow(zoomVelocity, Time.deltaTime);
-        if (switchZoomAt >= 0 && zoomVelocity > 0 && camera.orthographicSize > switchZoomAt) {
-            zoomVelocity = 1 / zoomVelocity;
-        }
+        camera.orthographicSize *= Mathf.Exp(
+            zoomVelocity * Mathf.Sin(Time.timeSinceLevelLoad * zoomVelocityPeriod));
     }
 }
