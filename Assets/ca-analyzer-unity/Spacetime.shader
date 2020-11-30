@@ -2,6 +2,7 @@ Shader "Spacetime"
 {
     Properties
     {
+        _Layer ("Layer", Int) = 0
         _UseGrayShades ("Use Gray Shades", Int) = 0
 
         _State0_Color0 ("State 0 Main Color", Color) = (0, 0, 0, 1)
@@ -77,16 +78,13 @@ Shader "Spacetime"
             #pragma fragment frag
 
             #include "UnityCG.cginc"
+            #include "ShaderLib/Utils.hlsl"
+            #include "ShaderLib/Packer.hlsl"
+            #include "ShaderLib/SpacetimePacked.hlsl"
 
-            #define TPACK int
-            #define CELL_SIZE_BITS 2
-            #define SIZE_OF_PACK_BITS 32
-            #define CELLS_PER_PACK (SIZE_OF_PACK_BITS / CELL_SIZE_BITS)
-            #define CELL_MASK ((1 << CELL_SIZE_BITS) - 1)
             #define StateVarDef(type, _StateVar) type _State0##_StateVar; type _State1##_StateVar; type _State2##_StateVar; type _State3##_StateVar; 
-            #define StateVar(state, _StateVar) (state > 1) ? ((state == 3) ? _State3##_StateVar : _State2##_StateVar) : ((state == 1) ? _State1##_StateVar : _State0##_StateVar)
+            #define StateVar(state, _StateVar) ((state > 1) ? ((state == 3) ? _State3##_StateVar : _State2##_StateVar) : ((state == 1) ? _State1##_StateVar : _State0##_StateVar))
             
-
             struct appdata
             {
                 float4 vertex : POSITION;
@@ -102,6 +100,7 @@ Shader "Spacetime"
             };
 
             CBUFFER_START(UnityPerMaterial)
+                int _Layer;
                 int _UseGrayShades;
                 StateVarDef(bool, _UseGradient);
                 StateVarDef(bool, _UseScreenCoords);
@@ -115,11 +114,8 @@ Shader "Spacetime"
                 StateVarDef(int, _DiscreteColors);
                 StateVarDef(int, _DiscreteColorsCount);
                 StateVarDef(int, _InterpolateHSV);
-
-                int _SpaceSize;
-                int _TimeSize;
-                Buffer<int> _SpacetimePacked;
             CBUFFER_END
+
 
             v2f vert (appdata v)
             {
@@ -131,20 +127,11 @@ Shader "Spacetime"
                 return o;
             }
 
-            inline TPACK getPack(int t, int xp) {
-                static const int spaceSizePacked = (_SpaceSize - 1) / CELLS_PER_PACK + 1;
-                return _SpacetimePacked[t * spaceSizePacked + xp];
-            }
-
-            inline int getFromPack(TPACK pack, int i) {
-                return (pack >> (i * CELL_SIZE_BITS)) & CELL_MASK;
-            }
-
             inline int getState(int2 tx) {
                 int t = tx.x;
                 int x = tx.y;
                 return getFromPack(
-                    getPack(t, x / CELLS_PER_PACK), 
+                    getPack(_Layer, t, x / CELLS_PER_PACK), 
                     x % CELLS_PER_PACK);
             }
 
@@ -163,57 +150,50 @@ Shader "Spacetime"
                 return clamp(g, 0, 1);
             }
 
-            float3 rgb2hsv(float3    c) {
-                float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-                float4 p = lerp(float4(c.bg, K.wz), float4(c.gb, K.xy), step(c.b, c.g));
-                float4 q = lerp(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
-
-                float d = q.x - min(q.w, q.y);
-                float e = 1.0e-10;
-                return float3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
-            }
-
-            float3 hsv2rgb(float3 c) {
-                float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-                float3 p = abs(frac(c.xxx + K.xyz) * 6.0 - K.www);
-                return c.z * lerp(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-            }
-
             float3 frag (v2f input) : SV_Target
             {
                 int state = getState(input.tx);
 
                 if (_UseGrayShades) {
-                    return float3(1, 1, 1) * state / (_UseGrayShades - 1);
+                    if (_UseGrayShades > 0) {
+                        return float3(1, 1, 1) * state / (_UseGrayShades - 1);
+                    } else {
+                        switch (state) {
+                            case 0: return float3(1, 0, 0);
+                            case 1: return float3(0, 1, 0);
+                            case 2: return float3(0, 0, 1);
+                            case 3: return float3(0, 0, 0);
+                        }
+                    }
                 }
                 
                 float2 screenRatio = _ScreenParams.xy / _ScreenParams.yx;
                 float2 screenPosUnstretchScale = max(1, screenRatio);
 
-                float g = 0;
-                if (StateVar(state, _UseGradient)) {
-                    float2 screenPosScale = StateVar(state, _Unstretch) ? screenPosUnstretchScale : 1;
-                    float2 screenPos = 0.5 - (0.5 - input.screenPos) * screenPosScale;
-                    g = grad(
-                        StateVar(state, _Center),
-                        StateVar(state, _UseScreenCoords) ? screenPos : input.uv,
-                        StateVar(state, _Radius),
-                        radians(StateVar(state, _Direction)),
-                        StateVar(state, _Radial),
-                        StateVar(state, _DiscreteColors) ? StateVar(state, _DiscreteColorsCount) : (256 * 256));
-                } 
-                if (StateVar(state, _InterpolateHSV)) {
-                    float3 c1 = rgb2hsv(StateVar(state, _Color0));
-                    float3 c2 = rgb2hsv(StateVar(state, _Color1));
-                    if (c1.x - c2.x > 0.5) { c1.x -= 1; }
-                    if (c1.x - c2.x < -0.5) { c1.x += 1; }
-                    return hsv2rgb(lerp(c1, c2, g));
-                } else {
-                    return lerp(
-                        StateVar(state, _Color0), 
-                        StateVar(state, _Color1), 
-                        g);
-                }
+                // if (StateVar(state, _UseGradient)) {
+                //     float2 screenPosScale = StateVar(state, _Unstretch) ? screenPosUnstretchScale : 1;
+                //     float2 screenPos = 0.5 - (0.5 - input.screenPos) * screenPosScale;
+                //     float g = grad(
+                //         StateVar(state, _Center),
+                //         StateVar(state, _UseScreenCoords) ? screenPos : input.uv,
+                //         StateVar(state, _Radius),
+                //         radians(StateVar(state, _Direction)),
+                //         StateVar(state, _Radial),
+                //         StateVar(state, _DiscreteColors) ? StateVar(state, _DiscreteColorsCount) : (256 * 256));
+                //      if (StateVar(state, _InterpolateHSV)) {
+                //         float3 c1 = rgb2hsv(StateVar(state, _Color0));
+                //         float3 c2 = rgb2hsv(StateVar(state, _Color1));
+                //         if (c1.x - c2.x > 0.5) { c1.x -= 1; }
+                //         if (c1.x - c2.x < -0.5) { c1.x += 1; }
+                //         return hsv2rgb(lerp(c1, c2, g));
+                //     } else {
+                //         return lerp(
+                //             StateVar(state, _Color0), 
+                //             StateVar(state, _Color1), 
+                //             g);
+                //     }
+                // }
+                return StateVar(state, _Color0);
             }
             ENDCG
         }

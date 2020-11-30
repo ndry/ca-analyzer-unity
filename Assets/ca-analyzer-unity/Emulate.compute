@@ -1,0 +1,91 @@
+#include "ShaderLib/Utils.hlsl"
+#include "ShaderLib/Packer.hlsl"
+
+#define CA_SPACETIMEPACKED_READWRITE
+#include "ShaderLib/SpacetimePacked.hlsl"
+
+#include "ShaderLib/Rule.hlsl"
+
+
+uint _RandSeed;
+uint _TimeStep;
+uint _TimeTo;
+Buffer<uint> _RuleTablePackedPacked;
+RWBuffer<uint> _Flag;
+
+void setSeed(uint packIndex) {
+    rand_seed = packIndex * packIndex * _RandSeed;
+} 
+
+// bool _WindowLength;
+// // RWBuffer<uint> _AnalyseDict;
+// RWBuffer<uint> _AnalyseCounter;
+
+// #pragma kernel CSAnalyze
+// [numthreads(1024, 1, 1)]
+// void CSAnalyze(uint3 id : SV_DispatchThreadID) {
+//     int layer = id.y;
+//     int t = _TimeStep;
+//     int xp = id.x;
+    
+//     uint pc = getPack(layer, t, xp);
+//     uint pn2 = getPack(layer, t, xp + 1);
+
+//     uint windowMask = cellMask(_WindowLength);
+    
+//     for (int sx = 0; sx < CELLS_PER_PACK; sx++) {
+//         bool flag = 0;
+//         uint conv = appendToPack(pc, pn2, sx);
+//         for (int dsx = 1; dsx < _WindowLength; dsx++) {
+//             uint xconv = conv ^ (conv >> cellSize(dsx));
+//             flag |= xconv & windowMask; // 0 if equal, some trash otherwise
+//         }
+//         _AnalyseCounter[layer * _SpaceSize + xp] = flag;
+//     }
+// }
+
+#pragma kernel CSFillStartRandom
+[numthreads(32, 32, 1)]
+void CSFillStartRandom(uint3 id : SV_DispatchThreadID) {
+    int layer = id.y;
+    int xp = id.x;
+    if (xp >= spaceSizePacked) { return; }
+
+    spacetimePacked_setLayer(layer);
+
+    for (uint t = 0; t < TIME_NEIGHBOURHOOD_RADIUS; t++) {
+        uint packIndex = t * spaceSizePacked + xp;
+
+        setSeed(packIndex);
+        uint result = 0;
+        for (uint i = 0; i < CELLS_PER_PACK; i++) {
+            result = setIntoPackDirty(result, i, rand() % STATE_COUNT);
+        }
+
+        setPack(t, xp, result);
+    }
+}
+
+#pragma kernel CSEmulate
+// spaceSize = packsPerCall * numthreads.x * CELLS_PER_PACK; max 16Ki
+[numthreads(3072 / CELLS_PER_PACK, 1, 1)]
+void CSEmulate(uint3 id : SV_DispatchThreadID) {
+    int layer = id.y;
+    int xp = id.x;
+
+    spacetimePacked_setLayer(layer);
+
+    for (uint t = _TimeStep; t < _TimeTo; t++) {
+        uint tm2 = (t - 2) % _TimeSize;
+        uint tm1 = (t - 1) % _TimeSize;
+        uint t0 = (t) % _TimeSize;
+        
+        uint ppc = getPack(tm2, xp);
+        uint pn1 = (xp > 0) ? getPack(tm1, xp - 1) : 0;
+        uint pc = getPack(tm1, xp);
+        uint pn2 = (xp < spaceSizePacked - 1) ? getPack(tm1, xp + 1) : 0;
+        setPack(t0, xp, fillPack(layer, ppc, pn2, pc, pn1));
+
+        AllMemoryBarrierWithGroupSync();
+    }
+}
